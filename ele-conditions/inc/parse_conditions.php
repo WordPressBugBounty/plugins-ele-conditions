@@ -1,4 +1,38 @@
 <?php
+if ( ! defined( 'ABSPATH' ) ) exit; // Exit if accessed directly
+
+function elecond_evaluate_group( array $conditions, bool $debug = false ): bool {
+	if ( empty( $conditions ) ) return true;
+
+	$result = null;
+	$prev_logic = 'AND';
+
+	foreach ( $conditions as $cond ) {
+		$var = ( isset( $cond['cond_var_preset'] ) && $cond['cond_var_preset'] === 'custom' )
+			? ( $cond['cond_var_custom'] ?? '' )
+			: ( $cond['cond_var_preset'] ?? '' );
+
+		$operator = $cond['cond_operator'] ?? '==';
+		$value    = $cond['cond_value'] ?? '';
+
+		if ( $var === '' ) continue;
+
+		$expr       = $var . $operator . $value;
+		$cond_result = elecond_parse_condition( $expr, $debug );
+
+		if ( $result === null ) {
+			$result = $cond_result;
+		} elseif ( $prev_logic === 'AND' ) {
+			$result = $result && $cond_result;
+		} else {
+			$result = $result || $cond_result;
+		}
+
+		$prev_logic = $cond['cond_logic'] ?? 'AND';
+	}
+
+	return $result ?? true;
+}
 
 //// nu merge cu variabile cu valori booleene!!!!!!!! repara!!!! vezi exemplu my var
 function elecond_check_value($val,$values){
@@ -175,14 +209,14 @@ function elecond_debug($condition,$var1,$var2,$val1,$val2,$operator,$result){
 <div style="font-family:monospace; line-height: 2em;" class="ele_cond_debug">
  
   <div style="color:lightgray;">
-   <span style="background:<?php echo $color5;?>;"><?php echo $condition; ?></span>   
+   <span style="background:<?php echo esc_attr( $color5 );?>;"><?php echo esc_html( $condition ); ?></span>
   </div>
   <div>
-    <span style="background:<?php echo $color1;?>;"><?php echo $val1;?></span> 
-    <span style="background:<?php echo $color3;?>;"><?php echo $operator;?></span> 
-    <span style="background:<?php echo $color2;?>;"><?php echo $val2;?></span> 
-    <span style="background:<?php echo $color5;?>; color:white; font-weight:bold;">-&gt;</span>
-    <span style="background:<?php echo $color4;?>;"><?php echo $result;?></span>
+    <span style="background:<?php echo esc_attr( $color1 );?>;"><?php echo esc_html( $val1 );?></span>
+    <span style="background:<?php echo esc_attr( $color3 );?>;"><?php echo esc_html( $operator );?></span>
+    <span style="background:<?php echo esc_attr( $color2 );?>;"><?php echo esc_html( $val2 );?></span>
+    <span style="background:<?php echo esc_attr( $color5 );?>; color:white; font-weight:bold;">-&gt;</span>
+    <span style="background:<?php echo esc_attr( $color4 );?>;"><?php echo esc_html( $result );?></span>
   </div>
 <?php
 }
