@@ -1,24 +1,81 @@
 <?php
 if ( ! defined( 'ABSPATH' ) ) exit; // Exit if accessed directly
 
+function elecond_get_meta_acf_options(): array {
+	$options = [ '' => __( '— select field —', 'ele-conditions' ) ];
+
+	// ACF field groups
+	if ( function_exists( 'acf_get_field_groups' ) ) {
+		foreach ( acf_get_field_groups() as $group ) {
+			$fields = acf_get_fields( $group['key'] );
+			if ( ! $fields ) continue;
+			foreach ( $fields as $field ) {
+				$options[ $field['name'] ] = $field['label'] . '  [ACF]';
+			}
+		}
+	}
+
+	// Post meta keys (exclude internal WP keys starting with _)
+	global $wpdb;
+	$keys = $wpdb->get_col(
+		"SELECT DISTINCT meta_key FROM {$wpdb->postmeta}
+		 WHERE meta_key NOT LIKE '\_%'
+		 ORDER BY meta_key LIMIT 300"
+	);
+	foreach ( $keys as $key ) {
+		if ( ! isset( $options[ $key ] ) ) {
+			$options[ $key ] = $key . '  [meta]';
+		}
+	}
+
+	$options['__manual__'] = __( '— type manually —', 'ele-conditions' );
+
+	return $options;
+}
+
 function elecond_evaluate_group( array $conditions, bool $debug = false ): bool {
 	if ( empty( $conditions ) ) return true;
 
-	$result = null;
+	$result     = null;
 	$prev_logic = 'AND';
 
 	foreach ( $conditions as $cond ) {
-		$var = ( isset( $cond['cond_var_preset'] ) && $cond['cond_var_preset'] === 'custom' )
-			? ( $cond['cond_var_custom'] ?? '' )
-			: ( $cond['cond_var_preset'] ?? '' );
+		$type = $cond['cond_type'] ?? 'simple';
 
-		$operator = $cond['cond_operator'] ?? '==';
-		$value    = $cond['cond_value'] ?? '';
+		if ( $type === 'time_interval' ) {
+			$cond_result = elecond_check_time_interval(
+				$cond['cond_time_from'] ?? '',
+				$cond['cond_time_to']   ?? ''
+			);
+		} elseif ( $type === 'date_interval' ) {
+			$cond_result = elecond_check_date_interval(
+				$cond['cond_datetime_from'] ?? '',
+				$cond['cond_datetime_to']   ?? ''
+			);
+		} else {
+			$preset = $cond['cond_var_preset'] ?? '';
+			if ( $preset === 'acf_meta' ) {
+				$picked = $cond['cond_var_acf_meta'] ?? '';
+				$var    = $picked === '__manual__'
+					? ( $cond['cond_var_acf_manual'] ?? '' )
+					: $picked;
+			} elseif ( $preset === 'user_meta' ) {
+				$meta_key = $cond['cond_var_user_meta'] ?? '';
+				$var      = $meta_key !== '' ? 'um_' . $meta_key : '';
+			} elseif ( $preset === 'custom' ) {
+				$var = $cond['cond_var_custom'] ?? '';
+			} else {
+				$var = $preset;
+			}
 
-		if ( $var === '' ) continue;
+			if ( $var === '' ) {
+				$prev_logic = $cond['cond_logic'] ?? 'AND';
+				continue;
+			}
 
-		$expr       = $var . $operator . $value;
-		$cond_result = elecond_parse_condition( $expr, $debug );
+			$expr        = $var . ( $cond['cond_operator'] ?? '==' ) . ( $cond['cond_value'] ?? '' );
+			$cond_result = elecond_parse_condition( $expr, $debug );
+		}
 
 		if ( $result === null ) {
 			$result = $cond_result;
@@ -32,6 +89,51 @@ function elecond_evaluate_group( array $conditions, bool $debug = false ): bool 
 	}
 
 	return $result ?? true;
+}
+
+function elecond_check_date_interval( string $from, string $to ): bool {
+	if ( $from === '' && $to === '' ) return true;
+
+	$tz  = wp_timezone();
+	$now = new DateTime( 'now', $tz );
+
+	// Normalize: datetime-local uses T separator (2026-01-15T09:00), replace with space
+	$from = str_replace( 'T', ' ', $from );
+	$to   = str_replace( 'T', ' ', $to );
+
+	if ( $from !== '' ) {
+		$from_dt = DateTime::createFromFormat( 'Y-m-d H:i', $from, $tz )
+			?: DateTime::createFromFormat( 'Y-m-d', $from, $tz );
+		if ( $from_dt && $now < $from_dt ) return false;
+	}
+
+	if ( $to !== '' ) {
+		$to_dt = DateTime::createFromFormat( 'Y-m-d H:i', $to, $tz );
+		if ( ! $to_dt ) {
+			$to_dt = DateTime::createFromFormat( 'Y-m-d', $to, $tz );
+			if ( $to_dt ) $to_dt->setTime( 23, 59, 59 );
+		}
+		if ( $to_dt && $now > $to_dt ) return false;
+	}
+
+	return true;
+}
+
+function elecond_check_time_interval( string $from, string $to ): bool {
+	if ( $from === '' || $to === '' ) return true;
+
+	$tz      = wp_timezone();
+	$now     = new DateTime( 'now', $tz );
+	$current = (int) $now->format( 'Hi' ); // e.g. 1430 for 14:30
+
+	$from_int = (int) str_replace( ':', '', $from ); // e.g. 900 for 09:00
+	$to_int   = (int) str_replace( ':', '', $to );
+
+	// Normal range (e.g. 09:00–17:00) or cross-midnight (e.g. 22:00–06:00)
+	if ( $from_int <= $to_int ) {
+		return $current >= $from_int && $current <= $to_int;
+	}
+	return $current >= $from_int || $current <= $to_int;
 }
 
 //// nu merge cu variabile cu valori booleene!!!!!!!! repara!!!! vezi exemplu my var
@@ -181,11 +283,25 @@ function elecond_prepare_values($keys){
         if (isset($post->ID)) {
           $custom_field=get_post_meta( $post->ID, $key, true); //echo "<br/>..".$key." :"; print_r($custom_field);
         }
-        $value[$key]=isset($custom_field) ? $custom_field : "";//pune custom field sau sa stearga keya daca nu are valoare 
+        $value[$key]=isset($custom_field) ? $custom_field : "";//pune custom field sau sa stearga keya daca nu are valoare
         if ($value[$key]=="" && function_exists("getProductAttributes") ) $value[$key] = getProductAttributes($post->ID,$key); // iau custom product attribute
-        if ($value[$key]=="" && function_exists('get_field') && $var->term_id) $value[$key] = get_field($key, $var->taxonomy.'_'.$var->term_id);// iau custom field de la taxonomie
-        if ($value[$key]=="") 
+        // ACF: post field
+        if ($value[$key]=="" && function_exists('get_field') && isset($post->ID)) {
+          $acf_val = get_field($key, $post->ID);
+          if ($acf_val !== false && $acf_val !== null && $acf_val !== '') $value[$key] = $acf_val;
+        }
+        // ACF: taxonomy field
+        if ($value[$key]=="" && function_exists('get_field') && isset($var->term_id)) $value[$key] = get_field($key, $var->taxonomy.'_'.$var->term_id);
+        if ($value[$key]=="")
             $value[$key]=isset($wp_query->query_vars[$key]) ? $wp_query->query_vars[$key] : ""; //get query_vars
+        // User meta: um_ prefix (e.g. um_city → get_user_meta on current user with key 'city')
+        if ( $value[$key] === '' && strncmp( $key, 'um_', 3 ) === 0 ) {
+          $u = wp_get_current_user();
+          if ( $u->ID ) {
+            $um_val = get_user_meta( $u->ID, substr( $key, 3 ), true );
+            if ( $um_val !== false && $um_val !== '' ) $value[$key] = $um_val;
+          }
+        }
       }
     }
   }
